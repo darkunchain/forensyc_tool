@@ -20,6 +20,55 @@ from PyQt5.QtWidgets import QFileSystemModel
 BASE_DIR = Path(__file__).resolve().parent
 TOOLS_DIR = BASE_DIR / "tools"
 WINPMEM_EXE = TOOLS_DIR / "winpmem.exe"
+SYSINTERNALS_DIR = TOOLS_DIR / "sysinternals"
+VOLATILITY_DIR = TOOLS_DIR / "volatility3"
+
+# --- COMANDOS A EJECUTAR ---
+
+COMMAND_SPECS = [
+    # --- Volatility 3 ---
+    {
+        "id": "vol_info",
+        "label": "Volatility: windows.info",
+        "kind": "volatility",
+        "plugin": "windows.info"
+    },
+    {
+        "id": "vol_pslist",
+        "label": "Volatility: windows.pslist",
+        "kind": "volatility",
+        "plugin": "windows.pslist"
+    },
+    {
+        "id": "vol_netscan",
+        "label": "Volatility: windows.netscan",
+        "kind": "volatility",
+        "plugin": "windows.netscan"
+    },
+    {
+        "id": "vol_dlllist",
+        "label": "Volatility: windows.dlllist",
+        "kind": "volatility",
+        "plugin": "windows.dlllist"
+    },
+
+    # --- Sysinternals (ejemplos de comandos CLI) ---
+    {
+        "id": "sys_pslist",
+        "label": "Sysinternals: pslist.exe (procesos)",
+        "kind": "sysinternals",
+        "exe": "pslist.exe",
+        "args": ["-accepteula"]
+    },
+    {
+        "id": "sys_psloggedon",
+        "label": "Sysinternals: psloggedon.exe (sesiones)",
+        "kind": "sysinternals",
+        "exe": "psloggedon.exe",
+        "args": ["-accepteula"]
+    },
+]
+
 
 
 def check_admin():
@@ -228,6 +277,10 @@ class MainWindow(QMainWindow):
         self.btn_dump.clicked.connect(self.run_memory_dump)
         layout.addWidget(self.btn_dump)
 
+        self.btn_skip_dump = QPushButton("Excluir dump de memoria (usar dump existente)")
+        self.btn_skip_dump.clicked.connect(self.use_existing_dump)
+        layout.addWidget(self.btn_skip_dump)
+
         # Nota / ayuda
         help_label = QLabel(
             "Flujo sugerido:\n"
@@ -328,6 +381,67 @@ class MainWindow(QMainWindow):
 
         # Al cerrar el popup, abrimos la ventana de análisis
         self.open_analyzer_window()
+
+
+    def use_existing_dump(self):
+        """
+        Permite saltar el paso de winpmem y usar un dump de memoria ya existente.
+        - El usuario selecciona el archivo de dump.
+        - Se toma la carpeta del dump como output_dir.
+        - Se calcula el hash y se registra en chain_of_custody.txt.
+        - Se abre directamente la ventana de análisis.
+        """
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar dump de memoria existente",
+            str(BASE_DIR),
+            "Volcados de memoria (*.raw *.mem *.dmp);;Todos los archivos (*.*)"
+        )
+
+        if not file_path:
+            # Usuario canceló
+            return
+
+        dump_path = Path(file_path)
+
+        if not dump_path.is_file():
+            QMessageBox.warning(
+                self,
+                "Archivo no válido",
+                "El archivo seleccionado no es válido."
+            )
+            return
+
+        # Usamos la carpeta del dump seleccionado como carpeta base
+        self.output_dir = dump_path.parent
+        self.last_dump_path = dump_path
+        self.label_output.setText(f"Carpeta de salida (auto): {self.output_dir}")
+
+        # Intentamos registrar cadena de custodia del dump existente
+        try:
+            sha256 = calcular_sha256(dump_path)
+            log_path = self.output_dir / "chain_of_custody.txt"
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(
+                    f"{datetime.datetime.utcnow().isoformat()}Z | "
+                    f"{dump_path.name} | SHA256={sha256} | [DUMP EXISTENTE]\n"
+                )
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Advertencia",
+                f"Se utilizará el dump existente, pero no se pudo registrar la cadena de custodia:\n{e}"
+            )
+
+        QMessageBox.information(
+            self,
+            "Dump existente seleccionado",
+            f"Se utilizará el siguiente dump de memoria:\n{dump_path}\n\n"
+            "Ahora se abrirá el analizador."
+        )
+
+        self.open_analyzer_window()
+
 
     def open_analyzer_window(self):
         if not self.output_dir or not self.last_dump_path:
