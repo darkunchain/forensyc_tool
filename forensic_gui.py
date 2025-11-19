@@ -8,7 +8,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFileDialog, QPushButton, QLabel,
     QVBoxLayout, QHBoxLayout, QMessageBox, QSplitter, QTreeView, QTabWidget,
-    QListWidget, QPlainTextEdit
+    QListWidget, QPlainTextEdit, QStyleFactory, QFileSystemModel, QListWidgetItem
 )
 from PyQt5.QtCore import Qt, QModelIndex
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
@@ -134,18 +134,37 @@ class AnalyzerWindow(QMainWindow):
 
         left_tabs.addTab(self.tree_view, "Archivos")
 
-        # 2) Lista de comandos (simulando comandos tipo Volatility/autopsy-like)
+        
+        # 2) Pestaña de comandos con checkboxes y botones
+        commands_tab = QWidget()
+        cmd_layout = QVBoxLayout(commands_tab)
+
+        # Botón de análisis automático (todos los comandos)
+        btn_auto = QPushButton("Análisis automático (todos)")
+        btn_auto.clicked.connect(self.run_all_commands)
+        cmd_layout.addWidget(btn_auto)
+
+        # Botón para ejecutar solo los comandos seleccionados
+        btn_selected = QPushButton("Ejecutar comandos seleccionados")
+        btn_selected.clicked.connect(self.run_selected_commands)
+        cmd_layout.addWidget(btn_selected)
+
+        # Lista de comandos con checkbox
         self.commands_list = QListWidget()
-        # Ejemplo de comandos / plugins (tú los conectas con Volatility si quieres)
-        comandos = [
-            "windows.info",
-            "windows.pslist",
-            "windows.netscan",
-            "windows.dlllist"
-        ]
-        self.commands_list.addItems(comandos)
+        for spec in COMMAND_SPECS:
+            item = QListWidgetItem(spec["label"])
+            item.setCheckState(Qt.Unchecked)
+            item.setData(Qt.UserRole, spec)  # guardamos el spec en el item
+            self.commands_list.addItem(item)
+
+        # Doble clic = ejecutar solo ese comando
         self.commands_list.itemDoubleClicked.connect(self.on_command_double_clicked)
-        left_tabs.addTab(self.commands_list, "Comandos")
+
+        cmd_layout.addWidget(self.commands_list)
+
+        left_tabs.addTab(commands_tab, "Comandos")
+
+
 
         main_splitter.addWidget(left_tabs)
 
@@ -181,6 +200,159 @@ class AnalyzerWindow(QMainWindow):
         file_path = Path(path)
         if file_path.is_file():
             self.mostrar_archivo_en_hex(file_path)
+
+
+
+
+# ----------------- Ejecución de comandos ----------------- #
+    def append_to_details(self, text: str):
+        """Agrega texto al panel de detalles sin borrar lo anterior."""
+        current = self.details_view.toPlainText()
+        if current:
+            new_text = current + "\n\n" + text
+        else:
+            new_text = text
+        self.details_view.setPlainText(new_text)
+
+    def run_all_commands(self):
+        """Ejecuta todos los comandos definidos en COMMAND_SPECS."""
+        if not self.dump_path or not self.dump_path.exists():
+            QMessageBox.warning(self, "Sin dump", "No hay dump de memoria válido para analizar.")
+            return
+
+        for i in range(self.commands_list.count()):
+            item = self.commands_list.item(i)
+            spec = item.data(Qt.UserRole)
+            self.run_command_spec(spec)
+
+        QMessageBox.information(self, "Análisis automático", "Se han ejecutado todos los comandos.")
+
+    def run_selected_commands(self):
+        """Ejecuta solo los comandos marcados con check."""
+        if not self.dump_path or not self.dump_path.exists():
+            QMessageBox.warning(self, "Sin dump", "No hay dump de memoria válido para analizar.")
+            return
+
+        any_selected = False
+        for i in range(self.commands_list.count()):
+            item = self.commands_list.item(i)
+            if item.checkState() == Qt.Checked:
+                spec = item.data(Qt.UserRole)
+                self.run_command_spec(spec)
+                any_selected = True
+
+        if not any_selected:
+            QMessageBox.information(self, "Sin selección", "No hay comandos seleccionados.")
+        else:
+            QMessageBox.information(self, "Ejecución finalizada", "Se han ejecutado los comandos seleccionados.")
+
+    def on_command_double_clicked(self, item):
+        """Doble clic en un comando = ejecutarlo solo."""
+        spec = item.data(Qt.UserRole)
+        self.run_command_spec(spec)
+
+    def run_command_spec(self, spec: dict):
+        """Decide si el comando es de Volatility o de Sysinternals y lo ejecuta."""
+        kind = spec.get("kind")
+
+        if kind == "volatility":
+            plugin = spec.get("plugin")
+            self.run_volatility_plugin(plugin)
+        elif kind == "sysinternals":
+            exe = spec.get("exe")
+            args = spec.get("args", [])
+            self.run_sysinternals_command(exe, args)
+        else:
+            self.append_to_details(f"[!] Tipo de comando desconocido: {spec}")
+
+    def run_volatility_plugin(self, plugin: str):
+        """Ejecuta un plugin de Volatility 3 sobre el dump de memoria."""
+        vol_script = VOLATILITY_DIR / "vol.py"  # ajusta si tu script tiene otro nombre
+
+        if not vol_script.exists():
+            QMessageBox.warning(
+                self,
+                "Volatility no encontrado",
+                f"No se encontró {vol_script}\n"
+                "Copia Volatility3 en tools/volatility3/ o ajusta la ruta."
+            )
+            return
+
+        if not self.dump_path or not self.dump_path.exists():
+            QMessageBox.warning(
+                self,
+                "Dump no encontrado",
+                "No se encontró el volcado de memoria para analizar."
+            )
+            return
+
+        cmd = [
+            sys.executable,
+            str(vol_script),
+            "-f", str(self.dump_path),
+            plugin
+        ]
+
+        self.append_to_details(f"[VOLATILITY] Ejecutando: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, errors="replace"
+            )
+            output = result.stdout or ""
+            error = result.stderr or ""
+
+            texto = f"===== Volatility: {plugin} =====\n"
+            texto += f"Comando: {' '.join(cmd)}\n\n"
+            if output.strip():
+                texto += output
+            if error.strip():
+                texto += "\n\n[STDERR]\n" + error
+
+            self.append_to_details(texto)
+
+        except Exception as e:
+            self.append_to_details(f"[!] Error ejecutando Volatility ({plugin}): {e}")
+
+    def run_sysinternals_command(self, exe_name: str, args: list):
+        """Ejecuta una herramienta Sysinternals (en vivo, sobre el sistema)."""
+        exe_path = SYSINTERNALS_DIR / exe_name
+
+        if not exe_path.exists():
+            QMessageBox.warning(
+                self,
+                "Sysinternals no encontrado",
+                f"No se encontró {exe_path}\n"
+                "Copia las herramientas Sysinternals en tools/sysinternals/."
+            )
+            return
+
+        cmd = [str(exe_path)] + args
+
+        self.append_to_details(f"[SYSINTERNALS] Ejecutando: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, errors="replace"
+            )
+            output = result.stdout or ""
+            error = result.stderr or ""
+
+            texto = f"===== Sysinternals: {exe_name} =====\n"
+            texto += f"Comando: {' '.join(cmd)}\n\n"
+            if output.strip():
+                texto += output
+            if error.strip():
+                texto += "\n\n[STDERR]\n" + error
+
+            self.append_to_details(texto)
+
+        except Exception as e:
+            self.append_to_details(f"[!] Error ejecutando Sysinternals ({exe_name}): {e}")
+
+
+
+            
 
     def mostrar_archivo_en_hex(self, file_path: Path, max_bytes: int = 4096):
         """
