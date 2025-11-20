@@ -663,7 +663,7 @@ class LukasSplash(QDialog):
         self.progress = 0
 
         # 10 segundos → 100 pasos → 100 ms por paso
-        self.interval_ms = 5
+        self.interval_ms = 20
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_progress)
         self.timer.start(self.interval_ms)
